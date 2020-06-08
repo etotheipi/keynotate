@@ -101,7 +101,7 @@ class AnnotateConfig:
                 {'name': 'and_or_single',
                  'tags': [
                      ['AND', 'Part of AND boolean subgroup'],
-                     ['OR', 'Part of OR boolean subgroup'],
+                     ['ROR', 'Part of OR boolean subgroup'],  # can't have a tag start with 'O'
                      ['SNGL', 'Token is part of slot that is not a boolean group (single item)'],
                  ]},
             ]
@@ -180,20 +180,25 @@ class SentenceState:
         curr_display_row = 3
         all_tokens = [tok.center(AnnotationList.MAX_TAG_SIZE, ' ') for tok in self.token_list]
         char_spans = SentenceState.token_list_to_char_spans(self.orig_sentence, self.token_list, allow_empty=True)
+        all_orig_tags = self.get_centered_tags(self.orig_tag_list)
+        all_arrow = self.highlight_token('V', self.pointer_index)
+        all_upd_tags = self.get_centered_tags(self.updated_tag_list)
+
+        row_start_idx = 0
+        row_last_idx = 0
+        last_line_length = 0
         while True:
             # We have to complicate the heck out of this method to handle wrapping...
-            curr_row_first_token_index = 0
-            curr_row_last_token_index = 0
             for chspan in char_spans:
-                curr_row_last_token_index += 1
-                if chspan[1] > SentenceState.MAX_LINE_LENGTH:
+                row_last_idx += 1
+                if chspan[1] - last_line_length > SentenceState.MAX_LINE_LENGTH:
+                    last_line_length = chspan[1]
                     break
 
-            toks = all_tokens[curr_row_first_token_index:curr_row_last_token_index]
-
-            orig_tags = self.get_centered_tags(self.orig_tag_list)
-            arrow = self.highlight_token('V', self.pointer_index)
-            upd_tags = self.get_centered_tags(self.updated_tag_list)
+            toks = all_tokens[row_start_idx:row_last_idx]
+            orig_tags = all_orig_tags[row_start_idx:row_last_idx]
+            arrow = self.highlight_token('V', self.pointer_index)[row_start_idx:row_last_idx]
+            upd_tags = self.get_centered_tags(self.updated_tag_list)[row_start_idx:row_last_idx]
             if self.pointer_index == len(self.token_list):
                 upd_tags.append('  [Press C to commit]')
             scr.addstr(curr_display_row, 20, spacer.join(toks))
@@ -204,11 +209,11 @@ class SentenceState:
             scr.addstr(curr_display_row+5, 20, spacer.join(upd_tags))
             scr.refresh()
 
-            if curr_row_last_token_index == len(self.token_list):
+            if row_last_idx >= len(self.token_list):
                 break
 
             curr_display_row += 9
-            curr_row_first_token_index = curr_row_last_token_index
+            row_start_idx = row_last_idx
 
 
     def to_json(self):
@@ -345,6 +350,7 @@ def main(stdscr):
             MessageLine(38, 3, stdscr),
             MessageLine(39, 3, stdscr),
             MessageLine(40, 3, stdscr),
+            MessageLine(curses.LINES-1, 3, stdscr),
         ]
 
         hotkey_map = {ord(k): tag[0] for k,tag in anno_list.get_hotkeys().items()}
@@ -361,7 +367,7 @@ def main(stdscr):
                 anno_list.draw_annotate_legend(curses.LINES-10, 3, stdscr)
                 msg_lines[0].display(f'Sentence {sentence_index+1} of {len(ss_list)}')
                 if ss.is_pointer_at_end():
-                    msg_lines[1].display('Press C to commit to file')
+                    msg_lines[-1].display('Press C to commit to file')
                 stdscr.refresh()
                 ch = stdscr.getch()
 
@@ -400,7 +406,7 @@ def main(stdscr):
                 stdscr.refresh()
 
     except KeyboardInterrupt:
-        msg_lines[3].display('')
+        msg_lines[-1].display('')
         stdscr.refresh()
         input('Exiting application.  Sorry, nothing you can do but press ctrl-C again to close this window')
         raise KeyboardInterrupt
