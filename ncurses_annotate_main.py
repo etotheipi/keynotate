@@ -3,15 +3,10 @@ import curses
 import json
 
 
-def end_application(stdscr):
-    curses.nocbreak()
-    stdscr.keypad(False)
-    curses.echo()
-    curses.endwin()
-
 
 class AnnotationList:
     MAX_TAG_SIZE = 4
+    RESERVED_HOTKEYS = 'wbo.<> '
 
     def __init__(self, tag_descr_pairs, hotkeys=None):
         """
@@ -27,6 +22,8 @@ class AnnotationList:
             self.hotkeys = [td[0][0].lower() for td in self.tag_descr_pairs]
             if len(self.hotkeys) != len(set(self.hotkeys)):
                 raise IOError('Auto hotkey assignment requires all short tags start with different letters')
+            if any([c in self.hotkeys for c in AnnotationList.RESERVED_HOTKEYS]):
+                raise IOError(f'Hotkeys are first letter of tag, cannot be in "{AnnotationList.RESERVED_HOTKEYS}"')
 
         assert len(self.tag_descr_pairs) == len(self.hotkeys)
 
@@ -37,6 +34,7 @@ class AnnotationList:
     def draw_annotate_legend(self, topleft_y, topleft_x, scr):
         builtin_keys = {
             '<SPACE>': ('', 'Use original tag'),
+            'o': ('', 'Use O-tag'),
             '.': ('', 'Repeat last tag assignment'),
             'w': ('', 'Go to next _W_ord (no changes)'),
             'b': ('', 'Go _B_ack one word (no changes)'),
@@ -214,10 +212,14 @@ class SentenceState:
 
 
     def to_json(self):
+        tag_list = self.updated_tag_list
+        if tag_list[0] == '':
+            tag_list = self.orig_tag_list
+
         char_spans = SentenceState.token_list_to_char_spans(
             self.orig_sentence,
             self.token_list,
-            self.updated_tag_list,
+            tag_list,
             allow_empty=False)
         return json.dumps({'text': self.orig_sentence, 'labels': char_spans})
 
@@ -301,10 +303,6 @@ class MessageLine:
 def main(stdscr):
     parser = argparse.ArgumentParser(prog='Hotkey-based Annotation Tool')
     parser.add_argument(dest='filename', type=str, help='File with existing sentences, raw or json (will be modified)')
-    #parser.add_argument('-i', '--file-in', dest='file_in', type=str,
-                        #help='File with existing sentences, w/ or w/o annotations')
-    #parser.add_argument('-o', '--file-out', dest='file_out', type=str,
-                        #help='File to put updated annotations')
     parser.add_argument('-l', '--layer-name', dest='layer_name', default=None, type=str,
                         help='Use layer name from config file.  Can be left out if only one layer defined')
     parser.add_argument('-c', '--config', dest='config', type=str, default='config.json',
@@ -340,8 +338,8 @@ def main(stdscr):
         curses.cbreak()
         curses.curs_set(0)
         print(curses.LINES, curses.COLS)
-        #assert curses.LINES >= 40
-        #assert curses.COLS >= 120
+        assert curses.LINES >= 40
+        assert curses.COLS >= 120
         msg_lines = [
             MessageLine( 1, 2, stdscr),
             MessageLine(38, 3, stdscr),
@@ -379,6 +377,8 @@ def main(stdscr):
                 elif ch == ord('.'):
                     if ss.is_pointer_at_end(): continue
                     ss.update_tag(ss.last_tag_update)
+                elif ch in [ord('o')]:
+                    ss.update_tag('O')
                 elif ch == ord('c'):
                     if ss.is_pointer_at_end():
                         if ss.is_complete():
@@ -406,6 +406,13 @@ def main(stdscr):
         raise KeyboardInterrupt
     finally:
         end_application(stdscr)
+
+
+def end_application(stdscr):
+    curses.nocbreak()
+    stdscr.keypad(False)
+    curses.echo()
+    curses.endwin()
 
 
 curses.wrapper(main)
