@@ -2,34 +2,34 @@ import argparse
 import curses
 import json
 
+import logging
+logging.basicConfig(filename='anno_log.txt', level=logging.DEBUG)
 
-
-class AnnotationList:
+class LayerAnnotations:
     MAX_TAG_SIZE = 4
     RESERVED_HOTKEYS = 'wbo.<> '
 
-    def __init__(self, tag_descr_pairs, hotkeys=None):
+    def __init__(self, tag_info_list, all_layer_names=None):
         """
-
-        :param tag_descr_pairs: List of pairs like [['IP4', 'IPv4Address'], ['MAC', 'Hardware ID']]
+        :param key_tag_descrs: List of pairs like [['i', 'IP4', 'IPv4Address'], ['m', 'MAC', 'Hardware ID']]
+        :param key_tag_descrs: List of maps like [{'key': 'i', 'tag': 'IP4', 'description': 'IPv4Address'}
         :param hotkeys:
         """
-        self.tag_descr_pairs = tag_descr_pairs
-        assert max([len(td[0]) for td in tag_descr_pairs]) <= AnnotationList.MAX_TAG_SIZE
-        self.hotkeys = hotkeys
+        assert max([len(ti['tag']) for ti in tag_info_list]) <= LayerAnnotations.MAX_TAG_SIZE
+        self.tag_info_list = tag_info_list
+        self.all_layer_names = all_layer_names
+        self.hotkey_map = {}
+        for ti in self.tag_info_list:
+            key = ti.get('key', ti['tag'][0].lower())  # get first letter of tag if no 'key' specified
 
-        if hotkeys is None:
-            self.hotkeys = [td[0][0].lower() for td in self.tag_descr_pairs]
-            if len(self.hotkeys) != len(set(self.hotkeys)):
-                raise IOError('Auto hotkey assignment requires all short tags start with different letters')
-            if any([c in self.hotkeys for c in AnnotationList.RESERVED_HOTKEYS]):
-                raise IOError(f'Hotkeys are first letter of tag, cannot be in "{AnnotationList.RESERVED_HOTKEYS}"')
-
-        assert len(self.tag_descr_pairs) == len(self.hotkeys)
+            if key in self.hotkey_map:
+                raise IOError(f'Key "{key}" is assigned to multiple tags')
+            if key in LayerAnnotations.RESERVED_HOTKEYS:
+                raise IOError(f'Key "{key}" is a reserved key, cannot bei n "{LayerAnnotations.RESERVED_HOTKEYS}')
+            self.hotkey_map[key] = (ti['tag'], ti['description'])
 
     def get_hotkeys(self):
-        out_map = {key: td_pair for key, td_pair in zip(self.hotkeys, self.tag_descr_pairs)}
-        return out_map
+        return self.hotkey_map
 
     def draw_annotate_legend(self, topleft_y, topleft_x, scr):
         builtin_keys = {
@@ -42,8 +42,14 @@ class AnnotationList:
             '>': ('', 'Next Sentence'),
             'c': ('', 'Commit sentence to disk (only when at end of sentence)'),
         }
+
+        layer_legend = {}
+        for i,name in enumerate(self.all_layer_names):
+            layer_legend[str(i+1)] = ('', name)
+
+
         x_offset = topleft_x
-        for key_list in [self.get_hotkeys(), builtin_keys]:
+        for key_list in [self.get_hotkeys(), builtin_keys, layer_legend]:
             y_offset = topleft_y
             for key, (tag, descr) in key_list.items():
                 disp_str = f'({key}) {tag.ljust(5)} [{descr}]'
@@ -73,13 +79,17 @@ class AnnotateConfig:
         for layer_map in self.config_map['layers']:
             assert 'name' in layer_map
             assert 'tags' in layer_map
-            for pairs in layer_map['tags']:
-                assert len(pairs) == 2
+            for tag_info in layer_map['tags']:
+                assert 'tag' in tag_info
+                assert 'description' in tag_info
 
     def get_layer_tags(self, layer_name):
         tags_list = list(filter(lambda m: m['name'] == layer_name, self.config_map['layers']))
         assert len(tags_list) == 1
         return tags_list[0]['tags']
+
+    def get_layer_names(self):
+        return [submap['name'] for submap in self.config_map['layers']]
 
     @staticmethod
     def create_sample_config():
@@ -87,22 +97,22 @@ class AnnotateConfig:
             'layers': [
                 {'name': 'coarse_tags',
                  'tags': [
-                     ['SRC', 'Source'],
-                     ['DEST', 'Destination'],
-                     ['EITH', 'Either Direction (src or dst)'],
-                     ['TO', 'To-Field'],
-                     ['FROM', 'From-Field'],
+                     {'tag': 'SRC',  'description': 'Source'},
+                     {'tag': 'DEST', 'description': 'Destination'},
+                     {'tag': 'EITH', 'description': 'Either Direction (src or dst)'},
+                     {'tag': 'TO',   'description': 'To-Field'},
+                     {'tag': 'FROM', 'description': 'From-Field'},
                  ]},
                 {'name': 'incl_excl',
                  'tags': [
-                     ['INCL', 'Inclusion'],
-                     ['EXCL', 'Exclusion'],
+                     {'tag': 'INCL', 'description': 'Inclusion'},
+                     {'tag': 'EXCL', 'description': 'Exclusion'},
                  ]},
                 {'name': 'and_or_single',
                  'tags': [
-                     ['AND', 'Part of AND boolean subgroup'],
-                     ['ROR', 'Part of OR boolean subgroup'],  # can't have a tag start with 'O'
-                     ['SNGL', 'Token is part of slot that is not a boolean group (single item)'],
+                     {'tag': 'AND',  'description': 'Part of AND boolean subgroup'},
+                     {'tag': 'OR',   'description': 'Part of OR boolean subgroup', 'key': 'r'},  # override hotkey
+                     {'tag': 'SNGL', 'description': 'Token is part of slot that is not a boolean group (single item)'},
                  ]},
             ]
         }
@@ -118,53 +128,71 @@ AnnotateConfig.create_sample_config()
 class SentenceState:
     MAX_LINE_LENGTH = 120
 
-    def __init__(self, orig_sentence, token_list, orig_tag_list='O'):
-        self.orig_sentence = orig_sentence  # we need this to write out exactly what was read from file
+    def __init__(self, orig_sentence, layer_names, token_list, orig_tag_lists=None):
+        self.orig_sentence = orig_sentence  # We need the exact input sentence for re-writing it later
         self.token_list = token_list
-
-        self.orig_tag_list = orig_tag_list
-        self.updated_tag_list = [''] * len(token_list)
-        self.pointer_index = 0
+        self.layer_names = layer_names
+        self.curr_token_index = 0
         self.last_tag_update = 'O'
-        if isinstance(orig_tag_list, str):
-            self.orig_tag_list = [orig_tag_list] * len(token_list)
-            self.updated_tag_list = [''] * len(token_list)
+        self.curr_layer_name = self.layer_names[0]
+
+        self.updated_tag_lists = {lname: [''] * len(token_list) for lname in layer_names}
+        self.orig_tag_lists = orig_tag_lists
+        if orig_tag_lists is None:
+            self.orig_tag_lists = {lname: ['O'] * len(token_list) for lname in layer_names}
 
     @staticmethod
-    def from_raw_sentence(sentence, tokenizer=lambda s: s.split()):
-        return SentenceState(sentence, tokenizer(sentence))
+    def default_tokenizer(sentence):
+        for punc in ',"\';':
+            sentence = sentence.replace(punc, f' {punc} ')
+        return sentence.split()
 
-    def update_tag(self, new_tag, increment_pointer=True):
-        self.updated_tag_list[self.pointer_index] = new_tag
+    @staticmethod
+    def from_raw_sentence(sentence, layer_names, tokenizer=None):
+        if tokenizer is None:
+            tokenizer = SentenceState.default_tokenizer
+
+        return SentenceState(sentence, layer_names, tokenizer(sentence))
+
+    def switch_to_layer(self, layer_name):
+        self.curr_layer_name = layer_name
+
+    def increment_layer(self):
+        layer_idx = self.layer_names.index(self.curr_layer_name)
+        next_layer = min(len(self.layer_names)-1, layer_idx + 1)
+        self.curr_layer_name = self.layer_names[next_layer]
+
+    def update_tag(self, new_tag):
+        self.updated_tag_lists[self.curr_layer_name][self.curr_token_index] = new_tag
         self.last_tag_update = new_tag
         self.increment_pointer()
 
     def skip_tag(self):
-        update_tag = self.orig_tag_list[self.pointer_index]
-        self.updated_tag_list[self.pointer_index] = update_tag
+        update_tag = self.orig_tag_lists[self.curr_layer_name][self.curr_token_index]
+        self.updated_tag_lists[self.curr_layer_name][self.curr_token_index] = update_tag
         self.last_tag_update = update_tag
         self.increment_pointer()
 
     def decrement_pointer(self, n=1):
-        self.pointer_index = max(0, self.pointer_index - n)
+        self.curr_token_index = max(0, self.curr_token_index - n)
 
     def increment_pointer(self, n=1):
-        self.pointer_index = min(len(self.token_list), self.pointer_index + n)
+        self.curr_token_index = min(len(self.token_list), self.curr_token_index + n)
 
     def is_pointer_at_end(self):
-        return self.pointer_index >= len(self.token_list)
+        return self.curr_token_index >= len(self.token_list)
 
     def is_complete(self):
-        return ('' not in self.updated_tag_list)
+        return ('' not in self.updated_tag_lists[self.curr_layer_name])
 
     def get_centered_tags(self, tag_list, filler='_'):
         assert len(self.token_list) == len(tag_list)
         accum_tags = []
         for i in range(len(self.token_list)):
-            toklen = max(AnnotationList.MAX_TAG_SIZE, len(self.token_list[i]))
+            toklen = max(LayerAnnotations.MAX_TAG_SIZE, len(self.token_list[i]))
             accum_tags.append(tag_list[i].center(toklen, filler))
-        with open('log.txt', 'a') as f:
-            f.write(str((self.token_list, self.updated_tag_list, tag_list, accum_tags)) + '\n')
+        #with open('log.txt', 'a') as f:
+            #f.write(str((self.token_list, self.updated_tag_list, tag_list, accum_tags)) + '\n')
         return accum_tags
 
     def highlight_token(self, draw_char, token_idx):
@@ -177,12 +205,10 @@ class SentenceState:
 
     def draw_current_state(self, scr, spacer=' '):
 
-        curr_display_row = 3
-        all_tokens = [tok.center(AnnotationList.MAX_TAG_SIZE, ' ') for tok in self.token_list]
+        curr_display_row = 4
+        all_tokens = [tok.center(LayerAnnotations.MAX_TAG_SIZE, ' ') for tok in self.token_list]
         char_spans = SentenceState.token_list_to_char_spans(self.orig_sentence, self.token_list, allow_empty=True)
-        all_orig_tags = self.get_centered_tags(self.orig_tag_list)
-        all_arrow = self.highlight_token('V', self.pointer_index)
-        all_upd_tags = self.get_centered_tags(self.updated_tag_list)
+        all_orig_tags = self.get_centered_tags(self.orig_tag_lists[self.curr_layer_name])
 
         row_start_idx = 0
         row_last_idx = 0
@@ -197,10 +223,10 @@ class SentenceState:
 
             toks = all_tokens[row_start_idx:row_last_idx]
             orig_tags = all_orig_tags[row_start_idx:row_last_idx]
-            arrow = self.highlight_token('V', self.pointer_index)[row_start_idx:row_last_idx]
-            upd_tags = self.get_centered_tags(self.updated_tag_list)[row_start_idx:row_last_idx]
-            if self.pointer_index == len(self.token_list):
-                upd_tags.append('  [Press C to commit]')
+            arrow = self.highlight_token('V', self.curr_token_index)[row_start_idx:row_last_idx]
+            upd_tags = self.get_centered_tags(self.updated_tag_lists[self.curr_layer_name])[row_start_idx:row_last_idx]
+            if self.curr_token_index == len(self.token_list):
+                upd_tags.append('  [Press "c" to commit]')
             scr.addstr(curr_display_row, 20, spacer.join(toks))
             scr.addstr(curr_display_row+2, 2, "Original Tags")
             scr.addstr(curr_display_row+2, 20, spacer.join(orig_tags))
@@ -215,18 +241,20 @@ class SentenceState:
             curr_display_row += 9
             row_start_idx = row_last_idx
 
-
     def to_json(self):
-        tag_list = self.updated_tag_list
-        if tag_list[0] == '':
-            tag_list = self.orig_tag_list
+        layer_spans = {}
+        for layer_name in self.layer_names:
+            layer_tags = self.updated_tag_lists[layer_name]
+            if layer_tags[0] == '':
+                layer_tags = self.orig_tag_lists[layer_name]
 
-        char_spans = SentenceState.token_list_to_char_spans(
-            self.orig_sentence,
-            self.token_list,
-            tag_list,
-            allow_empty=False)
-        return json.dumps({'text': self.orig_sentence, 'labels': char_spans})
+            layer_spans[layer_name] = SentenceState.token_list_to_char_spans(
+                self.orig_sentence,
+                self.token_list,
+                layer_tags,
+                allow_empty=False)
+
+        return json.dumps({'text': self.orig_sentence, 'labels': layer_spans})
 
     def append_to_file(self, filename):
         with open(filename, 'a') as f:
@@ -267,18 +295,26 @@ class SentenceState:
         return no_find_tag
 
     @staticmethod
-    def from_json(str_json, tokenizer=lambda s: s.split()):
+    def from_json(str_json, layer_names, tokenizer=None):
+        if tokenizer is None:
+            tokenizer = SentenceState.default_tokenizer
+
         sent_map = json.loads(str_json)
         orig_sentence = sent_map['text']
-        span_triplets = sent_map['labels']
+        layer_spans = sent_map['labels']
+
         token_list = tokenizer(orig_sentence)
         token_spans = SentenceState.token_list_to_char_spans(orig_sentence, token_list)
 
-        initial_tag_list = []
-        for tok_start, tok_end, tag in token_spans:
-            initial_tag_list.append(SentenceState.find_matching_slot(tok_start, tok_end, span_triplets))
+        all_init_tag_list = {}
+        for layer in layer_names:
+            layer_tag_list = []
+            for tok_start, tok_end, tag in token_spans:
+                layer_tag_list.append(SentenceState.find_matching_slot(tok_start, tok_end, layer_spans[layer]))
 
-        return SentenceState(orig_sentence, token_list, initial_tag_list)
+            all_init_tag_list[layer] = layer_tag_list
+
+        return SentenceState(orig_sentence, layer_names, token_list, all_init_tag_list)
 
     @staticmethod
     def write_entire_file(ss_list, filename):
@@ -308,21 +344,15 @@ class MessageLine:
 def main(stdscr):
     parser = argparse.ArgumentParser(prog='Hotkey-based Annotation Tool')
     parser.add_argument(dest='filename', type=str, help='File with existing sentences, raw or json (will be modified)')
-    parser.add_argument('-l', '--layer-name', dest='layer_name', default=None, type=str,
-                        help='Use layer name from config file.  Can be left out if only one layer defined')
     parser.add_argument('-c', '--config', dest='config', type=str, default='config.json',
                         help='Config file (see AnnotateConfig cls)')
-    parser.add_argument('-s', '--skip-lines', dest='skip_lines', type=int, default=0,
-                        help='Start at specific line number')
     args = parser.parse_args()
 
     cfg = AnnotateConfig(config_file=args.config)
-    if args.layer_name is None:
-        anno_list = cfg.config_map['layers'][0]['tags']
-    else:
-        anno_list = AnnotationList(cfg.get_layer_tags(args.layer_name))
+    layer_names = cfg.get_layer_names()
+    anno_list = LayerAnnotations(cfg.get_layer_tags(layer_names[0]), layer_names)
 
-    def read_in_whole_file(filename):
+    def read_in_whole_file(filename, config):
         raw_lines = [line.strip('\'" \t') for line in open(filename, 'r').read().split('\n')]
         ss_list = []
         for line in raw_lines:
@@ -330,9 +360,9 @@ def main(stdscr):
                 continue
 
             if line.startswith('{'):
-                ss_list.append(SentenceState.from_json(line))
+                ss_list.append(SentenceState.from_json(line, config.get_layer_names()))
             else:
-                ss_list.append(SentenceState.from_raw_sentence(line))
+                ss_list.append(SentenceState.from_raw_sentence(line, config.get_layer_names()))
 
         return ss_list
 
@@ -347,31 +377,40 @@ def main(stdscr):
         assert curses.COLS >= 120
         msg_lines = [
             MessageLine( 1, 2, stdscr),
+            MessageLine( 2, 2, stdscr),
             MessageLine(38, 3, stdscr),
             MessageLine(39, 3, stdscr),
             MessageLine(40, 3, stdscr),
             MessageLine(curses.LINES-1, 3, stdscr),
         ]
 
-        hotkey_map = {ord(k): tag[0] for k,tag in anno_list.get_hotkeys().items()}
 
         sentence_index = 0
+        selected_layer = cfg.get_layer_names()[0]
         while True:
             # Read in whole list every time so that we only ever see what has been committed to file when switching
-            ss_list = read_in_whole_file(args.filename)
+            anno_list = LayerAnnotations(cfg.get_layer_tags(selected_layer), layer_names)
+            ss_list = read_in_whole_file(args.filename, cfg)
             ss = ss_list[sentence_index]
+            ss.switch_to_layer(selected_layer)
+            hotkey_map = {ord(k): tag[0] for k, tag in anno_list.get_hotkeys().items()}
 
             while True:  # Iterate of tokens within sentence
                 stdscr.clear()
                 ss.draw_current_state(stdscr)
                 anno_list.draw_annotate_legend(curses.LINES-10, 3, stdscr)
                 msg_lines[0].display(f'Sentence {sentence_index+1} of {len(ss_list)}')
+                msg_lines[1].display(f'LAYER "{selected_layer}"')
                 if ss.is_pointer_at_end():
                     msg_lines[-1].display('Press C to commit to file')
                 stdscr.refresh()
                 ch = stdscr.getch()
 
-                if ch == ord('<'):
+                if ch in [ord(str(d)) for d in range(1, len(layer_names)+1)]:
+                    # Selected a different layer
+                    selected_layer = cfg.get_layer_names()[int(chr(ch)) - 1]
+                    break
+                elif ch == ord('<'):
                     sentence_index = max(0, sentence_index - 1)
                     break
                 elif ch == ord('>'):
@@ -385,20 +424,29 @@ def main(stdscr):
                     ss.update_tag(ss.last_tag_update)
                 elif ch in [ord('o')]:
                     ss.update_tag('O')
-                elif ch == ord('c'):
+                elif ch in [ord('c'), ord('C')]:
                     if ss.is_pointer_at_end():
-                        if ss.is_complete():
-                            SentenceState.write_entire_file(ss_list, args.filename)
-                            sentence_index = min(len(ss_list) - 1, sentence_index + 1) # increment sentence index
-                            break  # This skips to the next sentence
+                        if not ss.is_complete():
+                            msg_lines[2].display('Not all tags have been set!')
                         else:
-                            msg_lines[1].display('Not all tags have been set!')
+                            SentenceState.write_entire_file(ss_list, args.filename)
+                            # TODO: This doesn't seem to work right...
+                            if ch == ord('c'):
+                                sentence_index = min(len(ss_list) - 1, sentence_index + 1) # increment sentence index
+                            elif selected_layer == layer_names[-1]:  # Key was big C but on the last layer
+                                # Increment sentence and go back to first layer
+                                sentence_index = min(len(ss_list) - 1, sentence_index + 1) # increment sentence index
+                                selected_layer = layer_names[0]
+                            else:
+                                ss.increment_layer()
+
+                            break  # This skips to the next sentence
                 elif ch in [ord('w'), curses.KEY_RIGHT]:
                     ss.increment_pointer()
                 elif ch in [ord('b'), curses.KEY_LEFT]:
                     ss.decrement_pointer()
                 elif ch == ord('q'):
-                    msg_lines[1].display('Use Ctrl-C to quit!')
+                    msg_lines[2].display('Use Ctrl-C to quit!')
                 elif ch in hotkey_map.keys():
                     new_tag = anno_list
                     ss.update_tag(hotkey_map[ch])
