@@ -31,25 +31,27 @@ class LayerAnnotations:
     def get_hotkeys(self):
         return self.hotkey_map
 
-    def draw_annotate_legend(self, topleft_y, topleft_x, scr):
+    def draw_annotate_legend(self, topleft_y, topleft_x, scr, is_review_mode=False):
         builtin_keys = {
-            '<SPACE>': ('', 'Use original tag'),
+            'SPACE': ('', 'Use original tag'),
             'o': ('', 'Use O-tag'),
             '.': ('', 'Repeat last tag assignment'),
             'w': ('', 'Go to next _W_ord (no changes)'),
             'b': ('', 'Go _B_ack one word (no changes)'),
             '<': ('', 'Previous Sentence'),
             '>': ('', 'Next Sentence'),
-            'c': ('', 'Commit sentence to disk (only when at end of sentence)'),
+            'c': ('', 'Commit/save (only at end of sentence)'),
         }
 
         layer_legend = {}
         for i,name in enumerate(self.all_layer_names):
-            layer_legend[str(i+1)] = ('', name)
+            layer_legend[str(i+1)] = ('', f'Edit {name}')
+        layer_legend[0] = ('', 'Review All Layers')
 
+        left_menu = {} if is_review_mode else self.get_hotkeys()
 
         x_offset = topleft_x
-        for key_list in [self.get_hotkeys(), builtin_keys, layer_legend]:
+        for key_list in [left_menu, builtin_keys, layer_legend]:
             y_offset = topleft_y
             for key, (tag, descr) in key_list.items():
                 disp_str = f'({key}) {tag.ljust(5)} [{descr}]'
@@ -203,7 +205,7 @@ class SentenceState:
         tag_list[token_idx] = draw_char
         return self.get_centered_tags(tag_list, filler=' ')
 
-    def draw_current_state(self, scr, spacer=' '):
+    def draw_edit_mode_state(self, scr, spacer=' '):
 
         curr_display_row = 4
         all_tokens = [tok.center(LayerAnnotations.MAX_TAG_SIZE, ' ') for tok in self.token_list]
@@ -223,22 +225,61 @@ class SentenceState:
 
             toks = all_tokens[row_start_idx:row_last_idx]
             orig_tags = all_orig_tags[row_start_idx:row_last_idx]
-            arrow = self.highlight_token('V', self.curr_token_index)[row_start_idx:row_last_idx]
+            arrow1 = self.highlight_token('|', self.curr_token_index)[row_start_idx:row_last_idx]
+            arrow2 = self.highlight_token('V', self.curr_token_index)[row_start_idx:row_last_idx]
             upd_tags = self.get_centered_tags(self.updated_tag_lists[self.curr_layer_name])[row_start_idx:row_last_idx]
             if self.curr_token_index == len(self.token_list):
                 upd_tags.append('  [Press "c" to commit]')
             scr.addstr(curr_display_row, 20, spacer.join(toks))
             scr.addstr(curr_display_row+2, 2, "Original Tags")
             scr.addstr(curr_display_row+2, 20, spacer.join(orig_tags))
-            scr.addstr(curr_display_row+4, 20, spacer.join(arrow))
-            scr.addstr(curr_display_row+5, 2, "Updated Tags")
-            scr.addstr(curr_display_row+5, 20, spacer.join(upd_tags))
+            scr.addstr(curr_display_row+4, 20, spacer.join(arrow1))
+            scr.addstr(curr_display_row+5, 20, spacer.join(arrow2))
+            scr.addstr(curr_display_row+6, 2, "Updated Tags")
+            scr.addstr(curr_display_row+6, 20, spacer.join(upd_tags))
             scr.refresh()
 
             if row_last_idx >= len(self.token_list):
                 break
 
-            curr_display_row += 9
+            curr_display_row += 10
+            row_start_idx = row_last_idx
+
+    def draw_review_mode_state(self, scr, spacer=' '):
+        curr_display_row = 4
+        all_tokens = [tok.center(LayerAnnotations.MAX_TAG_SIZE, ' ') for tok in self.token_list]
+        char_spans = SentenceState.token_list_to_char_spans(self.orig_sentence, self.token_list, allow_empty=True)
+        all_orig_tags = self.get_centered_tags(self.orig_tag_lists[self.curr_layer_name])
+        all_layer_tags = {l: self.get_centered_tags(self.orig_tag_lists[l]) for l in self.layer_names}
+
+        num_layers = len(self.layer_names)
+
+        row_start_idx = 0
+        row_last_idx = 0
+        last_line_length = 0
+        while True:
+            # We have to complicate the heck out of this method to handle wrapping...
+            for chspan in char_spans:
+                row_last_idx += 1
+                if chspan[1] - last_line_length > SentenceState.MAX_LINE_LENGTH:
+                    last_line_length = chspan[1]
+                    break
+
+            toks = all_tokens[row_start_idx:row_last_idx]
+            scr.addstr(curr_display_row + 0, 2, 'Sentence:')
+            scr.addstr(curr_display_row + 0, 20, spacer.join(toks))
+
+            for i,layer_name in enumerate(self.layer_names):
+                scr.addstr(curr_display_row + 2 + i,  2, f'{layer_name[:16]}')
+                layer_tags = all_layer_tags[layer_name][row_start_idx:row_last_idx]
+                scr.addstr(curr_display_row + 2 + i, 20, spacer.join(layer_tags))
+
+            scr.refresh()
+
+            if row_last_idx >= len(self.token_list):
+                break
+
+            curr_display_row += 6 + num_layers
             row_start_idx = row_last_idx
 
     def to_json(self):
@@ -387,6 +428,7 @@ def main(stdscr):
 
         sentence_index = 0
         selected_layer = cfg.get_layer_names()[0]
+        is_review_mode = False
         while True:
             # Read in whole list every time so that we only ever see what has been committed to file when switching
             anno_list = LayerAnnotations(cfg.get_layer_tags(selected_layer), layer_names)
@@ -397,10 +439,14 @@ def main(stdscr):
 
             while True:  # Iterate of tokens within sentence
                 stdscr.clear()
-                ss.draw_current_state(stdscr)
-                anno_list.draw_annotate_legend(curses.LINES-10, 3, stdscr)
+                if is_review_mode:
+                    ss.draw_review_mode_state(stdscr)
+                else:
+                    ss.draw_edit_mode_state(stdscr)
+                    msg_lines[1].display(f'LAYER "{selected_layer}"')
+
+                anno_list.draw_annotate_legend(curses.LINES-10, 3, stdscr, is_review_mode)
                 msg_lines[0].display(f'Sentence {sentence_index+1} of {len(ss_list)}')
-                msg_lines[1].display(f'LAYER "{selected_layer}"')
                 if ss.is_pointer_at_end():
                     msg_lines[-1].display('Press C to commit to file')
                 stdscr.refresh()
@@ -409,11 +455,15 @@ def main(stdscr):
                 if ch in [ord(str(d)) for d in range(1, len(layer_names)+1)]:
                     # Selected a different layer
                     selected_layer = cfg.get_layer_names()[int(chr(ch)) - 1]
+                    is_review_mode = False
                     break
-                elif ch == ord('<'):
+                elif ch == ord('0'):
+                    is_review_mode = not is_review_mode
+                    break
+                elif ch in [ord('<'), curses.KEY_UP]:
                     sentence_index = max(0, sentence_index - 1)
                     break
-                elif ch == ord('>'):
+                elif ch in [ord('>'), curses.KEY_DOWN]:
                     sentence_index = min(len(ss_list) - 1, sentence_index + 1)
                     break
                 elif ch == ord(' '):
@@ -458,6 +508,8 @@ def main(stdscr):
         stdscr.refresh()
         input('Exiting application.  Sorry, nothing you can do but press ctrl-C again to close this window')
         raise KeyboardInterrupt
+
+"""
     finally:
         end_application(stdscr)
 
@@ -467,6 +519,7 @@ def end_application(stdscr):
     stdscr.keypad(False)
     curses.echo()
     curses.endwin()
+"""
 
 
 curses.wrapper(main)
