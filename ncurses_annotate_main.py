@@ -492,7 +492,7 @@ def main(stdscr):
                             break
                 elif ch in [ord('w'), curses.KEY_RIGHT]:
                     ss.increment_pointer()
-                elif ch in [ord('b'), curses.KEY_LEFT]:
+                elif ch in [ord('b'), curses.KEY_LEFT, curses.KEY_BACKSPACE]:
                     ss.decrement_pointer()
                 elif ch == ord('q'):
                     msg_lines[2].display('Use Ctrl-C to quit!')
