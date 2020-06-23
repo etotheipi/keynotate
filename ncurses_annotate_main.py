@@ -5,7 +5,7 @@ import json
 import logging
 logging.basicConfig(filename='anno_log.txt', level=logging.DEBUG)
 
-class LayerAnnotations:
+class LayerTagset:
     MAX_TAG_SIZE = 4
     RESERVED_HOTKEYS = 'wbo.<> '
 
@@ -15,7 +15,7 @@ class LayerAnnotations:
         :param key_tag_descrs: List of maps like [{'key': 'i', 'tag': 'IP4', 'description': 'IPv4Address'}
         :param hotkeys:
         """
-        assert max([len(ti['tag']) for ti in tag_info_list]) <= LayerAnnotations.MAX_TAG_SIZE
+        assert max([len(ti['tag']) for ti in tag_info_list]) <= LayerTagset.MAX_TAG_SIZE
         self.tag_info_list = tag_info_list
         self.all_layer_names = all_layer_names
         self.hotkey_map = {}
@@ -24,8 +24,8 @@ class LayerAnnotations:
 
             if key in self.hotkey_map:
                 raise IOError(f'Key "{key}" is assigned to multiple tags')
-            if key in LayerAnnotations.RESERVED_HOTKEYS:
-                raise IOError(f'Key "{key}" is a reserved key, cannot bei n "{LayerAnnotations.RESERVED_HOTKEYS}')
+            if key in LayerTagset.RESERVED_HOTKEYS:
+                raise IOError(f'Key "{key}" is a reserved key, cannot bei n "{LayerTagset.RESERVED_HOTKEYS}')
             self.hotkey_map[key] = (ti['tag'], ti['description'])
 
     def get_hotkeys(self):
@@ -34,13 +34,13 @@ class LayerAnnotations:
     def draw_annotate_legend(self, topleft_y, topleft_x, scr, is_review_mode=False):
         builtin_keys = {
             'SPACE': ('', 'Use original tag'),
+            'ENTER': ('', 'Commit/save (at end of sentence)'),
             'o': ('', 'Use O-tag'),
             '.': ('', 'Repeat last tag assignment'),
             'w': ('', 'Go to next _W_ord (no changes)'),
             'b': ('', 'Go _B_ack one word (no changes)'),
             '<': ('', 'Previous Sentence'),
             '>': ('', 'Next Sentence'),
-            'c': ('', 'Commit/save (only at end of sentence)'),
         }
 
         layer_legend = {}
@@ -98,23 +98,26 @@ class AnnotateConfig:
         sample_config = {
             'layers': [
                 {'name': 'coarse_tags',
+                 'type': 'slots',
                  'tags': [
                      {'tag': 'SRC',  'description': 'Source'},
                      {'tag': 'DEST', 'description': 'Destination'},
-                     {'tag': 'EITH', 'description': 'Either Direction (src or dst)'},
+                     {'tag': 'EITH', 'description': 'Either Dir (src or dst)'},
                      {'tag': 'TO',   'description': 'To-Field'},
                      {'tag': 'FROM', 'description': 'From-Field'},
                  ]},
                 {'name': 'incl_excl',
+                 'type': 'slots',
                  'tags': [
                      {'tag': 'INCL', 'description': 'Inclusion'},
                      {'tag': 'EXCL', 'description': 'Exclusion'},
                  ]},
                 {'name': 'and_or_single',
+                 'type': 'slots',
                  'tags': [
                      {'tag': 'AND',  'description': 'Part of AND boolean subgroup'},
                      {'tag': 'OR',   'description': 'Part of OR boolean subgroup', 'key': 'r'},  # override hotkey
-                     {'tag': 'SNGL', 'description': 'Token is part of slot that is not a boolean group (single item)'},
+                     {'tag': 'SNGL', 'description': 'Slot is not part of a boolean group'},
                  ]},
             ]
         }
@@ -191,10 +194,8 @@ class SentenceState:
         assert len(self.token_list) == len(tag_list)
         accum_tags = []
         for i in range(len(self.token_list)):
-            toklen = max(LayerAnnotations.MAX_TAG_SIZE, len(self.token_list[i]))
+            toklen = max(LayerTagset.MAX_TAG_SIZE, len(self.token_list[i]))
             accum_tags.append(tag_list[i].center(toklen, filler))
-        #with open('log.txt', 'a') as f:
-            #f.write(str((self.token_list, self.updated_tag_list, tag_list, accum_tags)) + '\n')
         return accum_tags
 
     def highlight_token(self, draw_char, token_idx):
@@ -208,7 +209,7 @@ class SentenceState:
     def draw_edit_mode_state(self, scr, spacer=' '):
 
         curr_display_row = 4
-        all_tokens = [tok.center(LayerAnnotations.MAX_TAG_SIZE, ' ') for tok in self.token_list]
+        all_tokens = [tok.center(LayerTagset.MAX_TAG_SIZE, ' ') for tok in self.token_list]
         char_spans = SentenceState.token_list_to_char_spans(self.orig_sentence, self.token_list, allow_empty=True)
         all_orig_tags = self.get_centered_tags(self.orig_tag_lists[self.curr_layer_name])
 
@@ -229,7 +230,7 @@ class SentenceState:
             arrow2 = self.highlight_token('V', self.curr_token_index)[row_start_idx:row_last_idx]
             upd_tags = self.get_centered_tags(self.updated_tag_lists[self.curr_layer_name])[row_start_idx:row_last_idx]
             if self.curr_token_index == len(self.token_list):
-                upd_tags.append('  [Press "c" to commit]')
+                upd_tags.append('  [Press <Enter> to commit]')
             scr.addstr(curr_display_row, 20, spacer.join(toks))
             scr.addstr(curr_display_row+2, 2, "Original Tags")
             scr.addstr(curr_display_row+2, 20, spacer.join(orig_tags))
@@ -247,7 +248,7 @@ class SentenceState:
 
     def draw_review_mode_state(self, scr, spacer=' '):
         curr_display_row = 4
-        all_tokens = [tok.center(LayerAnnotations.MAX_TAG_SIZE, ' ') for tok in self.token_list]
+        all_tokens = [tok.center(LayerTagset.MAX_TAG_SIZE, ' ') for tok in self.token_list]
         char_spans = SentenceState.token_list_to_char_spans(self.orig_sentence, self.token_list, allow_empty=True)
         all_orig_tags = self.get_centered_tags(self.orig_tag_lists[self.curr_layer_name])
         all_layer_tags = {l: self.get_centered_tags(self.orig_tag_lists[l]) for l in self.layer_names}
@@ -369,6 +370,7 @@ class SentenceState:
                 f.write(ss.to_json() + '\n')
 
 
+
 class MessageLine:
     def __init__(self, y, x, scr):
         self.y = y
@@ -387,11 +389,12 @@ def main(stdscr):
     parser.add_argument(dest='filename', type=str, help='File with existing sentences, raw or json (will be modified)')
     parser.add_argument('-c', '--config', dest='config', type=str, default='config.json',
                         help='Config file (see AnnotateConfig cls)')
+    #parser.add_argument('-m', '--merge', dest='merge_file', type=str, default=None,
+                        #help='Merge annotations from existing .jsonl into the file then exit')
     args = parser.parse_args()
 
     cfg = AnnotateConfig(config_file=args.config)
     layer_names = cfg.get_layer_names()
-    anno_list = LayerAnnotations(cfg.get_layer_tags(layer_names[0]), layer_names)
 
     def read_in_whole_file(filename, config):
         raw_lines = [line.strip('\'" \t') for line in open(filename, 'r').read().split('\n')]
@@ -400,7 +403,7 @@ def main(stdscr):
             if len(line.strip()) == 0:
                 continue
 
-            if line.startswith('{'):
+            if line.strip().startswith('{'):
                 ss_list.append(SentenceState.from_json(line, config.get_layer_names()))
             else:
                 ss_list.append(SentenceState.from_raw_sentence(line, config.get_layer_names()))
@@ -425,17 +428,16 @@ def main(stdscr):
             MessageLine(curses.LINES-1, 3, stdscr),
         ]
 
-
         sentence_index = 0
         selected_layer = cfg.get_layer_names()[0]
         is_review_mode = False
         while True:
             # Read in whole list every time so that we only ever see what has been committed to file when switching
-            anno_list = LayerAnnotations(cfg.get_layer_tags(selected_layer), layer_names)
+            tagset = LayerTagset(cfg.get_layer_tags(selected_layer), layer_names)
             ss_list = read_in_whole_file(args.filename, cfg)
             ss = ss_list[sentence_index]
             ss.switch_to_layer(selected_layer)
-            hotkey_map = {ord(k): tag[0] for k, tag in anno_list.get_hotkeys().items()}
+            hotkey_map = {ord(k): tag[0] for k, tag in tagset.get_hotkeys().items()}
 
             while True:  # Iterate of tokens within sentence
                 stdscr.clear()
@@ -445,10 +447,10 @@ def main(stdscr):
                     ss.draw_edit_mode_state(stdscr)
                     msg_lines[1].display(f'LAYER "{selected_layer}"')
 
-                anno_list.draw_annotate_legend(curses.LINES-10, 3, stdscr, is_review_mode)
+                tagset.draw_annotate_legend(curses.LINES-10, 3, stdscr, is_review_mode)
                 msg_lines[0].display(f'Sentence {sentence_index+1} of {len(ss_list)}')
                 if ss.is_pointer_at_end():
-                    msg_lines[-1].display('Press C to commit to file')
+                    msg_lines[-1].display('Press <Enter> to save and move on')
                 stdscr.refresh()
                 ch = stdscr.getch()
 
@@ -474,23 +476,20 @@ def main(stdscr):
                     ss.update_tag(ss.last_tag_update)
                 elif ch in [ord('o')]:
                     ss.update_tag('O')
-                elif ch in [ord('c'), ord('C')]:
-                    if ss.is_pointer_at_end():
+                elif ch in [ord('\n')]:
+                    logging.error("Hit enter")
+                    if not ss.is_pointer_at_end():
+                        logging.error("Not at end")
+                        while not ss.is_pointer_at_end():
+                            ss.skip_tag()
+                        logging.error("should be at end now")
+                    elif ss.is_pointer_at_end():
                         if not ss.is_complete():
                             msg_lines[2].display('Not all tags have been set!')
                         else:
                             SentenceState.write_entire_file(ss_list, args.filename)
-                            # TODO: This doesn't seem to work right...
-                            if ch == ord('c'):
-                                sentence_index = min(len(ss_list) - 1, sentence_index + 1) # increment sentence index
-                            elif selected_layer == layer_names[-1]:  # Key was big C but on the last layer
-                                # Increment sentence and go back to first layer
-                                sentence_index = min(len(ss_list) - 1, sentence_index + 1) # increment sentence index
-                                selected_layer = layer_names[0]
-                            else:
-                                ss.increment_layer()
-
-                            break  # This skips to the next sentence
+                            sentence_index = min(len(ss_list) - 1, sentence_index + 1) # increment sentence index
+                            break
                 elif ch in [ord('w'), curses.KEY_RIGHT]:
                     ss.increment_pointer()
                 elif ch in [ord('b'), curses.KEY_LEFT]:
@@ -498,7 +497,6 @@ def main(stdscr):
                 elif ch == ord('q'):
                     msg_lines[2].display('Use Ctrl-C to quit!')
                 elif ch in hotkey_map.keys():
-                    new_tag = anno_list
                     ss.update_tag(hotkey_map[ch])
 
                 stdscr.refresh()
@@ -508,18 +506,6 @@ def main(stdscr):
         stdscr.refresh()
         input('Exiting application.  Sorry, nothing you can do but press ctrl-C again to close this window')
         raise KeyboardInterrupt
-
-"""
-    finally:
-        end_application(stdscr)
-
-
-def end_application(stdscr):
-    curses.nocbreak()
-    stdscr.keypad(False)
-    curses.echo()
-    curses.endwin()
-"""
 
 
 curses.wrapper(main)
