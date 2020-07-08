@@ -497,7 +497,8 @@ def main(stdscr):
                 elif ch == ord('q'):
                     msg_lines[2].display('Use Ctrl-C to quit!')
                 elif ch in hotkey_map.keys():
-                    ss.update_tag(hotkey_map[ch])
+                    if not ss.is_pointer_at_end():
+                        ss.update_tag(hotkey_map[ch])
 
                 stdscr.refresh()
 
