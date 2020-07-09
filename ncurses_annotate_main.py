@@ -310,12 +310,12 @@ class SentenceState:
 
         offset = 0
         tok_char_spans = []
-        for tok,tag in zip(token_list, tag_list):
+        for tok, tag in zip(token_list, tag_list):
             start = sentence.find(tok, offset)
             if tag == 'O' or (tag == '' and not allow_empty):
                 continue
             tok_char_spans.append([start, start + len(tok), tag])
-            offset += len(tok)
+            offset = start + len(tok)
 
         return tok_char_spans
 
