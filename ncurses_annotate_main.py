@@ -290,13 +290,14 @@ class SentenceState:
             if layer_tags[0] == '':
                 layer_tags = self.orig_tag_lists[layer_name]
 
-            layer_spans[layer_name] = SentenceState.token_list_to_char_spans(
+            out_name = f'label_spans_{layer_name}'
+            layer_spans[out_name] = SentenceState.token_list_to_char_spans(
                 self.orig_sentence,
                 self.token_list,
                 layer_tags,
                 allow_empty=False)
 
-        return json.dumps({'text': self.orig_sentence, 'labels': layer_spans})
+        return json.dumps({'text': self.orig_sentence, **layer_spans})
 
     def append_to_file(self, filename):
         with open(filename, 'a') as f:
@@ -343,16 +344,23 @@ class SentenceState:
 
         sent_map = json.loads(str_json)
         orig_sentence = sent_map['text']
-        layer_spans = sent_map['labels']
+        prefix = 'label_spans_'
+        names_in_file = [k[len(prefix):] for k in sent_map.keys() if k.startswith(prefix)]
+
+        for name in names_in_file:
+            if name not in layer_names:
+                print(f'Existing annotation layer ({name}) not in config file')
 
         token_list = tokenizer(orig_sentence)
         token_spans = SentenceState.token_list_to_char_spans(orig_sentence, token_list)
 
         all_init_tag_list = {}
         for layer in layer_names:
+            full_layer_name = f'{prefix}{layer}'
             layer_tag_list = []
             for tok_start, tok_end, tag in token_spans:
-                layer_tag_list.append(SentenceState.find_matching_slot(tok_start, tok_end, layer_spans[layer]))
+                slot = SentenceState.find_matching_slot(tok_start, tok_end, sent_map[full_layer_name])
+                layer_tag_list.append(slot)
 
             all_init_tag_list[layer] = layer_tag_list
 
@@ -397,7 +405,7 @@ def main(stdscr):
     layer_names = cfg.get_layer_names()
 
     def read_in_whole_file(filename, config):
-        raw_lines = [line.strip('\'" \t') for line in open(filename, 'r').read().split('\n')]
+        raw_lines = [line.strip() for line in open(filename, 'r').read().split('\n')]
         ss_list = []
         for line in raw_lines:
             if len(line.strip()) == 0:
