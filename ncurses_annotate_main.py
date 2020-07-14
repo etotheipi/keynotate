@@ -1,6 +1,7 @@
 import argparse
 import curses
 import json
+from collections import defaultdict
 
 import logging
 logging.basicConfig(filename='anno_log.txt', level=logging.DEBUG)
@@ -73,6 +74,16 @@ class AnnotateConfig:
         else:
             raise IOError('Need to supply either a file or map')
 
+        self.map_tags_short_to_full = defaultdict(dict)
+        self.map_tags_full_to_short = defaultdict(dict)
+
+        for layer_info in self.config_map['layers']:
+            for tag_info in layer_info['tags']:
+                if 'full_tag' not in tag_info:
+                    tag_info['full_tag'] = tag_info['tag']
+                self.map_tags_short_to_full[layer_info['name']][tag_info['tag']] = tag_info['full_tag']
+                self.map_tags_full_to_short[layer_info['name']][tag_info['full_tag']] = tag_info['tag']
+
         self.validate()
 
     def validate(self):
@@ -83,6 +94,7 @@ class AnnotateConfig:
             assert 'tags' in layer_map
             for tag_info in layer_map['tags']:
                 assert 'tag' in tag_info
+                assert 'full_tag' in tag_info
                 assert 'description' in tag_info
 
     def get_layer_tags(self, layer_name):
@@ -92,6 +104,29 @@ class AnnotateConfig:
 
     def get_layer_names(self):
         return [submap['name'] for submap in self.config_map['layers']]
+
+    def convert_tag_short_to_full(self, layer_name, short_tag, dne_return_orig=True):
+        short_tag = short_tag.upper()
+        if short_tag == 'O':
+            return 'O'
+
+        full_tag = self.map_tags_short_to_full[layer_name].get(short_tag, None)
+        if dne_return_orig and full_tag is None:
+            return short_tag
+        else:
+            return full_tag
+
+    def convert_tag_full_to_short(self, layer_name, full_tag, dne_return_orig=True):
+        full_tag = full_tag.upper()
+        if full_tag == 'O':
+            return 'O'
+
+        short_tag = self.map_tags_full_to_short[layer_name].get(full_tag, None)
+
+        if dne_return_orig and short_tag is None:
+            return full_tag
+        else:
+            return short_tag
 
     @staticmethod
     def create_sample_config():
@@ -133,18 +168,20 @@ AnnotateConfig.create_sample_config()
 class SentenceState:
     MAX_LINE_LENGTH = 120
 
-    def __init__(self, orig_sentence, layer_names, token_list, orig_tag_lists=None):
+    def __init__(self, orig_sentence, token_list, config_obj, orig_tag_lists=None, other_kv_pairs=None):
         self.orig_sentence = orig_sentence  # We need the exact input sentence for re-writing it later
         self.token_list = token_list
-        self.layer_names = layer_names
+        self.layer_names = config_obj.get_layer_names()
         self.curr_token_index = 0
         self.last_tag_update = 'O'
         self.curr_layer_name = self.layer_names[0]
+        self.config_obj = config_obj
+        self.other_kv_pairs = other_kv_pairs if other_kv_pairs is not None else {}
 
-        self.updated_tag_lists = {lname: [''] * len(token_list) for lname in layer_names}
+        self.updated_tag_lists = {lname: [''] * len(token_list) for lname in self.layer_names}
         self.orig_tag_lists = orig_tag_lists
         if orig_tag_lists is None:
-            self.orig_tag_lists = {lname: ['O'] * len(token_list) for lname in layer_names}
+            self.orig_tag_lists = {lname: ['O'] * len(token_list) for lname in self.layer_names}
 
     @staticmethod
     def default_tokenizer(sentence):
@@ -153,11 +190,11 @@ class SentenceState:
         return sentence.split()
 
     @staticmethod
-    def from_raw_sentence(sentence, layer_names, tokenizer=None):
+    def from_raw_sentence(sentence, config_obj, tokenizer=None):
         if tokenizer is None:
             tokenizer = SentenceState.default_tokenizer
 
-        return SentenceState(sentence, layer_names, tokenizer(sentence))
+        return SentenceState(sentence, tokenizer(sentence), config_obj)
 
     def switch_to_layer(self, layer_name):
         self.curr_layer_name = layer_name
@@ -294,10 +331,10 @@ class SentenceState:
             layer_spans[out_name] = SentenceState.token_list_to_char_spans(
                 self.orig_sentence,
                 self.token_list,
-                layer_tags,
+                [self.config_obj.convert_tag_short_to_full(layer_name, t) for t in layer_tags],
                 allow_empty=False)
 
-        return json.dumps({'text': self.orig_sentence, **layer_spans})
+        return json.dumps({'text': self.orig_sentence, **layer_spans, **self.other_kv_pairs})
 
     def append_to_file(self, filename):
         with open(filename, 'a') as f:
@@ -338,7 +375,7 @@ class SentenceState:
         return no_find_tag
 
     @staticmethod
-    def from_json(str_json, layer_names, tokenizer=None):
+    def from_json(str_json, config_obj, tokenizer=None):
         if tokenizer is None:
             tokenizer = SentenceState.default_tokenizer
 
@@ -348,23 +385,32 @@ class SentenceState:
         names_in_file = [k[len(prefix):] for k in sent_map.keys() if k.startswith(prefix)]
 
         for name in names_in_file:
-            if name not in layer_names:
+            if name not in config_obj.get_layer_names():
                 print(f'Existing annotation layer ({name}) not in config file')
 
         token_list = tokenizer(orig_sentence)
         token_spans = SentenceState.token_list_to_char_spans(orig_sentence, token_list)
 
         all_init_tag_list = {}
-        for layer in layer_names:
+        for layer in config_obj.get_layer_names():
             full_layer_name = f'{prefix}{layer}'
             layer_tag_list = []
             for tok_start, tok_end, tag in token_spans:
-                slot = SentenceState.find_matching_slot(tok_start, tok_end, sent_map[full_layer_name])
-                layer_tag_list.append(slot)
+                if full_layer_name in sent_map:
+                    slot = SentenceState.find_matching_slot(tok_start, tok_end, sent_map[full_layer_name])
+                else:
+                    slot = 'O'
+
+                short_tag = config_obj.convert_tag_full_to_short(layer, slot, dne_return_orig=True)
+                layer_tag_list.append(short_tag)
 
             all_init_tag_list[layer] = layer_tag_list
 
-        return SentenceState(orig_sentence, layer_names, token_list, all_init_tag_list)
+        all_keys = set(sent_map.keys())
+        relevant_keys = set(['text'] + [f'{prefix}{layer}' for layer in config_obj.get_layer_names()])
+        other_data = {k: sent_map[k] for k in all_keys - relevant_keys}
+
+        return SentenceState(orig_sentence, token_list, config_obj, all_init_tag_list, other_data)
 
     @staticmethod
     def write_entire_file(ss_list, filename):
@@ -402,6 +448,9 @@ def main(stdscr):
     args = parser.parse_args()
 
     cfg = AnnotateConfig(config_file=args.config)
+    with open('new_config.json', 'w') as f:
+        json.dump(cfg.config_map, f, indent=2)
+
     layer_names = cfg.get_layer_names()
 
     def read_in_whole_file(filename, config):
@@ -412,9 +461,9 @@ def main(stdscr):
                 continue
 
             if line.strip().startswith('{'):
-                ss_list.append(SentenceState.from_json(line, config.get_layer_names()))
+                ss_list.append(SentenceState.from_json(line, config))
             else:
-                ss_list.append(SentenceState.from_raw_sentence(line, config.get_layer_names()))
+                ss_list.append(SentenceState.from_raw_sentence(line, config))
 
         return ss_list
 
