@@ -1,0 +1,33 @@
+{
+  "layers": [
+    {
+      "name": "ner",
+      "tags": [
+        { "tag": "EMAI", "description": "Email Address" },
+        { "tag": "NAME", "description": "Person's Name" },
+        { "tag": "ORG", "description": "Organization", "key": "g" },
+        { "tag": "PHON", "description": "Phone Number" },
+        { "tag": "TWTR", "description": "Twitter Handle" },
+        { "tag": "IPV4", "description": "IPv4 Address"},
+        { "tag": "KEYW", "description": "Keyword"}
+      ]
+    },
+    {
+      "name": "context",
+      "tags": [
+        { "tag": "SRC", "description": "Comms Source"},
+        { "tag": "DEST", "description": "Comms Dest"},
+        { "tag": "EITH", "description": "Comms Participant"},
+        { "tag": "CONT", "description": "Contains Text"},
+        { "tag": "TRAF", "description": "Traffic Constraint" }
+      ]
+    },
+    {
+      "name": "inclexcl",
+      "tags": [
+        { "tag": "INCL", "description": "Include"},
+        { "tag": "EXCL", "description": "Exclude"}
+      ]
+    }
+  ]
+}

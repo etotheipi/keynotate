@@ -128,41 +128,6 @@ class AnnotateConfig:
         else:
             return short_tag
 
-    @staticmethod
-    def create_sample_config():
-        sample_config = {
-            'layers': [
-                {'name': 'coarse_tags',
-                 'type': 'slots',
-                 'tags': [
-                     {'tag': 'SRC',  'description': 'Source'},
-                     {'tag': 'DEST', 'description': 'Destination'},
-                     {'tag': 'EITH', 'description': 'Either Dir (src or dst)'},
-                     {'tag': 'TO',   'description': 'To-Field'},
-                     {'tag': 'FROM', 'description': 'From-Field'},
-                 ]},
-                {'name': 'incl_excl',
-                 'type': 'slots',
-                 'tags': [
-                     {'tag': 'INCL', 'description': 'Inclusion'},
-                     {'tag': 'EXCL', 'description': 'Exclusion'},
-                 ]},
-                {'name': 'and_or_single',
-                 'type': 'slots',
-                 'tags': [
-                     {'tag': 'AND',  'description': 'Part of AND boolean subgroup'},
-                     {'tag': 'OR',   'description': 'Part of OR boolean subgroup', 'key': 'r'},  # override hotkey
-                     {'tag': 'SNGL', 'description': 'Slot is not part of a boolean group'},
-                 ]},
-            ]
-        }
-
-        with open('sample_config.json', 'w') as f:
-            json.dump(sample_config, f, indent=2)
-
-
-# We need to generate a sample config file
-AnnotateConfig.create_sample_config()
 
 
 class SentenceState:
@@ -185,7 +150,7 @@ class SentenceState:
 
     @staticmethod
     def default_tokenizer(sentence):
-        for punc in ',"\';':
+        for punc in ',"\';?!':
             sentence = sentence.replace(punc, f' {punc} ')
         return sentence.split()
 
@@ -257,7 +222,7 @@ class SentenceState:
             # We have to complicate the heck out of this method to handle wrapping...
             for chspan in char_spans:
                 row_last_idx += 1
-                if chspan[1] - last_line_length > SentenceState.MAX_LINE_LENGTH:
+                if chspan[1] - last_line_length > SentenceState.MAX_LINE_LENGTH - 30:
                     last_line_length = chspan[1]
                     break
 
@@ -473,9 +438,12 @@ def main(stdscr):
         curses.noecho()
         curses.cbreak()
         curses.curs_set(0)
-        print(curses.LINES, curses.COLS)
-        assert curses.LINES >= 40
-        assert curses.COLS >= 120
+        min_h, min_w = 40, 140
+        err_msg = f'Terminal must be at least {min_w} x {min_h} to use this script'
+        err_msg += f'\nCurrent size is {curses.COLS} x {curses.LINES}'
+        assert curses.LINES >= min_h, err_msg
+        assert curses.COLS >= min_w, err_msg
+
         msg_lines = [
             MessageLine( 1, 2, stdscr),
             MessageLine( 2, 2, stdscr),
@@ -504,7 +472,7 @@ def main(stdscr):
                     ss.draw_edit_mode_state(stdscr)
                     msg_lines[1].display(f'LAYER "{selected_layer}"')
 
-                tagset.draw_annotate_legend(curses.LINES-10, 3, stdscr, is_review_mode)
+                tagset.draw_annotate_legend(curses.LINES-16, 3, stdscr, is_review_mode)
                 msg_lines[0].display(f'Sentence {sentence_index+1} of {len(ss_list)}')
                 if ss.is_pointer_at_end():
                     msg_lines[-1].display('Press <Enter> to save and move on')
